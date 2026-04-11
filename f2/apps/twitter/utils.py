@@ -488,6 +488,9 @@ def extract_desc(text):
         str: 提取后的标题
     """
 
+    if text is None:
+        return ""
+
     text = text.strip()  # 去掉两端空格
     https_index = text.find("https")  # 查找 "https" 的起始位置
 
