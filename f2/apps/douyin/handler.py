@@ -287,6 +287,9 @@ class DouyinHandler:
         async with DouyinCrawler(self.kwargs) as crawler:
             params = PostDetail(aweme_id=aweme_id)
             response = await crawler.fetch_post_detail(params)
+            # [DEBUG] 打印原始 API 响应
+            import json
+            logger.debug(f"[DEBUG DOUYIN API RESPONSE]\n{json.dumps(response, indent=2, ensure_ascii=False)[:10000]}")
             video = PostDetailFilter(response)
 
             if video.nickname is None:

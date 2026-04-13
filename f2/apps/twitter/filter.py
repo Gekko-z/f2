@@ -1,5 +1,7 @@
 # path: f2/apps/twitter/filter.py
 
+from typing import Any
+
 from f2.utils.json_filter import JSONModel
 from f2.utils.utils import timestamp_2_str, replaceT, filter_to_list
 from f2.apps.twitter.utils import extract_desc
@@ -9,133 +11,229 @@ from f2.apps.twitter.utils import extract_desc
 
 
 class TweetDetailFilter(JSONModel):
+    """推文详情过滤器 - 适配 Twitter API 响应结构变化
+
+    Twitter API 的 instructions 数组长度不固定（可能插入 TimelineClearCache 等），
+    且返回结构频繁变化（如 result.tweet.legacy vs result.legacy）。
+    因此初始化时动态查找包含 entries 的 instruction 索引，并用 _find_value()
+    自动尝试多种路径结构来定位字段值。
+    """
+
+    def __init__(self, data):
+        super().__init__(data)
+        self._instruction_idx = self._find_instruction_index()
+
+    def _find_instruction_index(self) -> str:
+        """动态查找包含 entries 的 instruction 索引。
+
+        先试 [0]，再试 [1]，最后遍历所有 instruction。
+        返回格式如 "0"、"1" 等，用于拼接 jsonpath。
+        """
+        instructions = self._get_attr_value(
+            "$.data.threaded_conversation_with_injections_v2.instructions"
+        )
+        if isinstance(instructions, list):
+            # 先试 [0]，再试 [1]
+            for idx in [0, 1]:
+                if idx < len(instructions) and "entries" in instructions[idx]:
+                    return str(idx)
+            # 遍历所有 instruction
+            for idx, inst in enumerate(instructions):
+                if isinstance(inst, dict) and "entries" in inst:
+                    return str(idx)
+        # 兜底：返回 "0"，让 jsonpath 自己匹配失败
+        return "0"
+
+    def _find_value(self, legacy_field: str) -> Any:
+        """自动查找字段值，尝试多种结构。
+
+        Args:
+            legacy_field: legacy 内的字段名，如 "id_str", "full_text"
+
+        尝试顺序:
+            1. result.tweet.legacy.{field}
+            2. result.legacy.{field}
+            3. 递归遍历 entries JSON 树查找匹配的 key
+        """
+        idx = self._instruction_idx
+        base = (
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}]"
+            f".entries[0].content.itemContent.tweet_results.result"
+        )
+
+        # 第 1 次尝试：result.tweet.legacy.{field}
+        path = f"{base}.tweet.legacy.{legacy_field}"
+        value = self._get_attr_value(path)
+        if value is not None:
+            return value
+
+        # 第 2 次尝试：result.legacy.{field}
+        path = f"{base}.legacy.{legacy_field}"
+        value = self._get_attr_value(path)
+        if value is not None:
+            return value
+
+        # 第 3 次尝试：从 entries 根递归查找
+        entries_path = (
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}]"
+            f".entries[0]"
+        )
+        entries = self._get_attr_value(entries_path)
+        if entries:
+            result = self._deep_search(entries, legacy_field)
+            if result is not None:
+                return result
+
+        return None
+
+    def _deep_search(self, obj: Any, target_key: str) -> Any:
+        """在嵌套 JSON 中递归查找 target_key 对应的值。"""
+        if isinstance(obj, dict):
+            if target_key in obj:
+                return obj[target_key]
+            for v in obj.values():
+                found = self._deep_search(v, target_key)
+                if found is not None:
+                    return found
+        elif isinstance(obj, list):
+            for item in obj:
+                found = self._deep_search(item, target_key)
+                if found is not None:
+                    return found
+        return None
+
     # tweet
     @property
     def tweet_id(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.id_str"
-        )
-
-    # tweet_id = property(
-    #     lambda self: self._get_attr_value(
-    #         "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.rest_id"
-    #     )
-    # )
+        return self._find_value("id_str")
 
     @property
     def tweet_type(self):
         return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.itemType"
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{self._instruction_idx}].entries[0].content.itemContent.itemType"
         )
 
     @property
     def tweet_views_count(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.views.count"
+        idx = self._instruction_idx
+        # 尝试 views.count (新版)
+        value = self._get_attr_value(
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}].entries[0].content.itemContent.tweet_results.result.tweet.views.count"
+        )
+        if value is not None:
+            return value
+        value = self._get_attr_value(
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}].entries[0].content.itemContent.tweet_results.result.views.count"
+        )
+        if value is not None:
+            return value
+        return self._deep_search(
+            self._get_attr_value(
+                f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}].entries[0]"
+            ),
+            "count"
         )
 
     # 收藏数
     @property
     def tweet_bookmark_count(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.bookmark_count"
-        )
+        return self._find_value("bookmark_count")
 
     # 点赞数
     @property
     def tweet_favorite_count(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.favorite_count"
-        )
+        return self._find_value("favorite_count")
 
     # 评论数
     @property
     def tweet_reply_count(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.reply_count"
-        )
+        return self._find_value("reply_count")
 
     # 转推数
     @property
     def tweet_retweet_count(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.retweet_count"
-        )
+        return self._find_value("retweet_count")
 
     # 发布时间
     @property
     def tweet_created_at(self):
-        return timestamp_2_str(
-            self._get_attr_value(
-                "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.created_at"
-            )
-        )
+        return timestamp_2_str(self._find_value("created_at"))
 
     # 推文内容
     @property
     def tweet_desc(self):
-        return replaceT(
-            extract_desc(
-                self._get_attr_value(
-                    "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.full_text"
-                )
-            )
-        )
+        return replaceT(extract_desc(self._find_value("full_text")))
 
     @property
     def tweet_desc_raw(self):
-        return extract_desc(
-            self._get_attr_value(
-                "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.full_text"
-            )
-        )
+        return extract_desc(self._find_value("full_text"))
 
     # 媒体状态
     @property
     def tweet_media_status(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.entities.media[*].ext_media_availability.status"
-        )
+        return self._find_value("status")
 
     # 媒体类型
     @property
     def tweet_media_type(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.entities.media[*].type"
+        idx = self._instruction_idx
+        base = (
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}]"
+            f".entries[0].content.itemContent.tweet_results.result"
+        )
+        # 尝试 tweet.legacy
+        value = self._get_attr_value(f"{base}.tweet.legacy.entities.media[0].type")
+        if value is not None:
+            return value
+        # 尝试 legacy
+        value = self._get_attr_value(f"{base}.legacy.entities.media[0].type")
+        if value is not None:
+            return value
+        return self._deep_search(
+            self._get_attr_value(f"{base}"), "type"
         )
 
     # 图片链接
     @property
     def tweet_media_url(self):
         media_urls = self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.entities.media[*].media_url_https"
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{self._instruction_idx}].entries[0].content.itemContent.tweet_results.result.tweet.legacy.entities.media[*].media_url_https"
         )
+        if not media_urls:
+            media_urls = self._get_attr_value(
+                f"$.data.threaded_conversation_with_injections_v2.instructions[{self._instruction_idx}].entries[0].content.itemContent.tweet_results.result.legacy.entities.media[*].media_url_https"
+            )
         if not isinstance(media_urls, list):
-            media_urls = [media_urls]
+            media_urls = [media_urls] if media_urls else []
         return media_urls
 
     # 视频链接（过滤 M3U8，选择 bitrate 最高的 MP4）
     @property
     def tweet_video_url(self):
-        variants = self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.extended_entities.media[*].video_info.variants[*]"
+        idx = self._instruction_idx
+        base = (
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}]"
+            f".entries[0].content.itemContent.tweet_results.result"
         )
+        variants = self._get_attr_value(f"{base}.tweet.legacy.extended_entities.media[*].video_info.variants[*]")
+        if not variants:
+            variants = self._get_attr_value(f"{base}.legacy.extended_entities.media[*].video_info.variants[*]")
+        if not variants:
+            variants = self._get_attr_value(f"{base}.tweet.legacy.entities.media[*].video_info.variants[*]")
+        if not variants:
+            variants = self._get_attr_value(f"{base}.legacy.entities.media[*].video_info.variants[*]")
         if not variants:
             return None
-        # variants 可能是列表或嵌套列表（因为 media[*] 和 variants[*]）
         if isinstance(variants, list):
-            # 扁平化
             flat = []
             for v in variants:
                 if isinstance(v, list):
                     flat.extend(v)
                 else:
                     flat.append(v)
-            # 过滤出 content_type == "video/mp4" 且 bitrate 最大的
             mp4_variants = [v for v in flat if isinstance(v, dict) and v.get("content_type") == "video/mp4"]
             if not mp4_variants:
                 return None
-            # 按 bitrate 排序，取最高的
             mp4_variants.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
             return mp4_variants[0].get("url")
         return None
@@ -143,141 +241,150 @@ class TweetDetailFilter(JSONModel):
     # 视频时长
     @property
     def tweet_video_duration(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.extended_entities.media[*].video_info.duration_millis"
+        idx = self._instruction_idx
+        base = (
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}]"
+            f".entries[0].content.itemContent.tweet_results.result"
         )
+        value = self._get_attr_value(f"{base}.tweet.legacy.extended_entities.media[*].video_info.duration_millis")
+        if value is not None:
+            return value
+        return self._get_attr_value(f"{base}.legacy.extended_entities.media[*].video_info.duration_millis")
 
     # 视频码率
     @property
     def tweet_video_bitrate(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.legacy.extended_entities.media[*].video_info.variants[*].bitrate"
+        idx = self._instruction_idx
+        base = (
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}]"
+            f".entries[0].content.itemContent.tweet_results.result"
         )
+        value = self._get_attr_value(f"{base}.tweet.legacy.extended_entities.media[*].video_info.variants[*].bitrate")
+        if value is not None:
+            return value
+        return self._get_attr_value(f"{base}.legacy.extended_entities.media[*].video_info.variants[*].bitrate")
 
     # User
     # 注册时间
     @property
     def join_time(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.legacy.created_at"
-        )
+        return timestamp_2_str(self._find_user_value("created_at"))
 
     # 蓝V认证
     @property
     def is_blue_verified(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.is_blue_verified"
-        )
+        return self._find_user_value("is_blue_verified")
 
     # 用户ID example: VXNlcjoxNDkzODI0MTA2Njk2OTAwNjEx
     @property
     def user_id(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.id"
-        )
+        return self._find_user_value("id")
 
     # 用户唯一ID（推特ID） example: Asai_chan_
     @property
     def user_unique_id(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.legacy.screen_name"
-        )
+        return self._find_user_value("screen_name")
 
     # 昵称 example: 核酸酱
     @property
     def nickname(self):
-        return replaceT(
-            self._get_attr_value(
-                "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.legacy.name"
-            )
-        )
+        return replaceT(self._find_user_value("name"))
 
     @property
     def nicename_raw(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.legacy.name"
-        )
+        return self._find_user_value("name")
 
     @property
     def user_description(self):
-        return replaceT(
-            self._get_attr_value(
-                "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.legacy.description"
-            )
-        )
+        return replaceT(self._find_user_value("description"))
 
     @property
     def user_description_raw(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.legacy.description"
-        )
+        return self._find_user_value("description")
 
     # 置顶推文ID
     @property
     def user_pined_tweet_id(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.legacy.pinned_tweet_ids_str[0]"
-        )
+        return self._find_user_value("pinned_tweet_ids_str")
 
     # 主页背景图片
     @property
     def user_profile_banner_url(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.profile_banner_url"
-        )
+        return self._find_user_value("profile_banner_url")
 
     # 关注者
     @property
     def followers_count(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.followers_count"
-        )
+        return self._find_user_value("followers_count")
 
     # 正在关注
     @property
     def friends_count(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.friends_count"
-        )
+        return self._find_user_value("friends_count")
 
     # 帖子数（推文数&回复 maybe？）
     @property
     def statuses_count(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.statuses_count"
-        )
+        return self._find_user_value("statuses_count")
 
     # 媒体数（图片数&视频数）
     @property
     def media_count(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.media_count"
-        )
+        return self._find_user_value("media_count")
 
     # 喜欢数
     @property
     def favourites_count(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.favourites_count"
-        )
+        return self._find_user_value("favourites_count")
 
     @property
     def has_custom_timelines(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.has_custom_timelines"
-        )
+        return self._find_user_value("has_custom_timelines")
 
     @property
     def location(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.location"
-        )
+        return self._find_user_value("location")
 
     @property
     def can_dm(self):
-        return self._get_attr_value(
-            "$.data.threaded_conversation_with_injections_v2.instructions[1].entries[0].content.itemContent.tweet_results.result.core.user_results.result.can_dm"
+        return self._find_user_value("can_dm")
+
+    def _find_user_value(self, target_key: str) -> Any:
+        """自动查找用户相关字段值，适配不同 API 结构。
+
+        尝试顺序:
+            1. result.tweet.core.user_results.result.{key}
+            2. result.core.user_results.result.{key}
+            3. result.tweet.core.user_results.result.legacy.{key}
+            4. result.core.user_results.result.legacy.{key}
+            5. 递归遍历 entries 树
+        """
+        idx = self._instruction_idx
+        base = (
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}]"
+            f".entries[0].content.itemContent.tweet_results.result"
         )
+
+        paths_to_try = [
+            f"{base}.tweet.core.user_results.result.{target_key}",
+            f"{base}.core.user_results.result.{target_key}",
+            f"{base}.tweet.core.user_results.result.legacy.{target_key}",
+            f"{base}.core.user_results.result.legacy.{target_key}",
+        ]
+
+        for path in paths_to_try:
+            value = self._get_attr_value(path)
+            if value is not None:
+                return value
+
+        # 兜底：递归查找
+        entries = self._get_attr_value(
+            f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}].entries[0]"
+        )
+        if entries:
+            return self._deep_search(entries, target_key)
+
+        return None
 
     def _to_raw(self) -> dict:
         return self._data
