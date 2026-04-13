@@ -161,6 +161,8 @@ class AsyncVideoDB(BaseDB):
             "create_time TEXT",
             "desc TEXT",
             "desc_raw TEXT",
+            "caption TEXT",
+            "caption_raw TEXT",
             "duration TEXT",
             "is_ads TEXT",
             "is_story TEXT",
