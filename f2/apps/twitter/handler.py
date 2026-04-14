@@ -190,7 +190,7 @@ class TwitterHandler:
             response = await crawler.fetch_tweet_detail(params)
             # [DEBUG] 打印原始 API 响应
             import json
-            logger.debug(f"[DEBUG TWITTER API RESPONSE]\n{json.dumps(response, indent=2, ensure_ascii=False)[:10000]}")
+            logger.debug(f"[DEBUG TWITTER API RESPONSE]\n{json.dumps(response, indent=2, ensure_ascii=False)}")
             tweet = TweetDetailFilter(response)
 
         logger.info(
