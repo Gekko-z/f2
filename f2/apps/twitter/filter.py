@@ -193,51 +193,77 @@ class TweetDetailFilter(JSONModel):
             self._get_attr_value(f"{base}"), "type"
         )
 
-    # 图片链接
+    # 图片链接（使用 extended_entities，与 video_info 保持一致的数据源）
     @property
     def tweet_media_url(self):
-        media_urls = self._get_attr_value(
-            f"$.data.threaded_conversation_with_injections_v2.instructions[{self._instruction_idx}].entries[0].content.itemContent.tweet_results.result.tweet.legacy.entities.media[*].media_url_https"
-        )
-        if not media_urls:
-            media_urls = self._get_attr_value(
-                f"$.data.threaded_conversation_with_injections_v2.instructions[{self._instruction_idx}].entries[0].content.itemContent.tweet_results.result.legacy.entities.media[*].media_url_https"
-            )
-        if not isinstance(media_urls, list):
-            media_urls = [media_urls] if media_urls else []
-        return media_urls
+        media_info = self._get_unified_media_info()
+        return [m["media_url"] for m in media_info]
 
     # 视频链接列表（多个视频时返回 URL 列表，每个视频取最高码率的 MP4）
     @property
     def tweet_video_urls(self):
+        media_info = self._get_unified_media_info()
+        return [m["video_url"] for m in media_info if m["video_url"]]
+
+    def _get_unified_media_info(self) -> list:
+        """
+        从 extended_entities.media 统一解析所有媒体信息。
+        返回 [{type, media_url, video_url}, ...] 列表。
+        使用同一数据源确保 URL 和类型的索引一一对应。
+        """
         idx = self._instruction_idx
         base = (
             f"$.data.threaded_conversation_with_injections_v2.instructions[{idx}]"
             f".entries[0].content.itemContent.tweet_results.result"
         )
-        # 获取所有 media 的 video_info.variants
-        all_variants = self._get_attr_value(f"{base}.tweet.legacy.extended_entities.media[*].video_info.variants")
-        if not all_variants:
-            all_variants = self._get_attr_value(f"{base}.legacy.extended_entities.media[*].video_info.variants")
-        if not all_variants:
-            all_variants = self._get_attr_value(f"{base}.tweet.legacy.entities.media[*].video_info.variants")
-        if not all_variants:
-            all_variants = self._get_attr_value(f"{base}.legacy.entities.media[*].video_info.variants")
-        if not all_variants:
-            return None
-        if not isinstance(all_variants, list):
-            all_variants = [all_variants]
-        # 对每个 media 的 variants，过滤 M3U8，选择最高码率 MP4
-        video_urls = []
-        for variants in all_variants:
-            if not isinstance(variants, list):
+
+        # 获取 extended_entities.media 数组
+        all_media = self._get_attr_value(f"{base}.tweet.legacy.extended_entities.media")
+        if not all_media:
+            all_media = self._get_attr_value(f"{base}.legacy.extended_entities.media")
+        if not all_media:
+            all_media = self._get_attr_value(f"{base}.tweet.legacy.entities.media")
+        if not all_media:
+            all_media = self._get_attr_value(f"{base}.legacy.entities.media")
+
+        if not all_media or not isinstance(all_media, list):
+            return []
+
+        results = []
+        for media in all_media:
+            if not isinstance(media, dict):
                 continue
-            mp4_variants = [v for v in variants if isinstance(v, dict) and v.get("content_type") == "video/mp4"]
-            if not mp4_variants:
-                continue
-            mp4_variants.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
-            video_urls.append(mp4_variants[0].get("url"))
-        return video_urls if video_urls else None
+
+            media_type = media.get("type", "unknown")
+            media_url = media.get("media_url_https", "")
+
+            # 提取视频 URL
+            video_url = None
+            video_info = media.get("video_info", {})
+            if video_info and isinstance(video_info, dict):
+                variants = video_info.get("variants", [])
+                if isinstance(variants, list):
+                    mp4_variants = [
+                        v for v in variants
+                        if isinstance(v, dict) and v.get("content_type") == "video/mp4"
+                    ]
+                    if mp4_variants:
+                        mp4_variants.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
+                        video_url = mp4_variants[0].get("url")
+
+            results.append({
+                "type": media_type,
+                "media_url": media_url,
+                "video_url": video_url,
+            })
+
+        return results
+
+    # 媒体类型列表（按顺序，与 tweet_media_url 索引对应）
+    @property
+    def tweet_media_types(self):
+        media_info = self._get_unified_media_info()
+        return [m["type"] for m in media_info]
 
     # 视频链接（兼容旧版，返回单个最高码率视频 URL）
     @property

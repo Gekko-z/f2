@@ -116,6 +116,7 @@ class TwitterDownloader(BaseDownloader):
         self.tweet_media_url = tweet_data_dict.get("tweet_media_url")
         self.tweet_video_url = tweet_data_dict.get("tweet_video_url")
         self.tweet_video_urls = tweet_data_dict.get("tweet_video_urls")
+        self.tweet_media_types = tweet_data_dict.get("tweet_media_types")
 
         # logger.info(f"========{tweet_id}========")
         # logger.info(tweet_data_dict)
@@ -134,10 +135,13 @@ class TwitterDownloader(BaseDownloader):
             await self.download_videos()
 
         if self.tweet_media_type and "photo" in str(self.tweet_media_type):
-            # 如果有视频，跳过视频封面对应的 media，其余为真实图片
-            # 视频封面数 = 视频数，只跳过前 N 个（N = 视频数）
-            skip_count = len(self.tweet_video_urls) if self.tweet_video_urls else 0
-            await self.download_images(skip_first=skip_count)
+            # 找出所有视频/动图的索引，这些索引对应的 media_url 是封面，需要跳过
+            video_cover_indices = set()
+            if isinstance(self.tweet_media_types, list):
+                for i, t in enumerate(self.tweet_media_types):
+                    if t in ("video", "animated_gif"):
+                        video_cover_indices.add(i)
+            await self.download_images(skip_indices=video_cover_indices)
 
         await self.download_desc()
 
@@ -179,7 +183,7 @@ class TwitterDownloader(BaseDownloader):
             _("视频"), self.tweet_video_url, self.base_path, video_name, ".mp4"
         )
 
-    async def download_images(self, skip_first=False):
+    async def download_images(self, skip_indices=None):
         if not self.tweet_media_url:
             logger.warning(
                 _("{0} : {1} 该推文没有图片链接").format(
@@ -188,6 +192,9 @@ class TwitterDownloader(BaseDownloader):
             )
             return
 
+        if skip_indices is None:
+            skip_indices = set()
+
         tweet_media_urls = (
             [self.tweet_media_url]
             if isinstance(self.tweet_media_url, str)
@@ -195,8 +202,8 @@ class TwitterDownloader(BaseDownloader):
         )
 
         for i, image_url in enumerate(tweet_media_urls):
-            if i < skip_first:
-                continue  # 跳过前 N 个（视频封面）
+            if i in skip_indices:
+                continue  # 跳过视频封面
             if not image_url:
                 continue
 
