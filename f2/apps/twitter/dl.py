@@ -120,11 +120,21 @@ class TwitterDownloader(BaseDownloader):
         # logger.info(tweet_data_dict)
         # logger.info("===================================")
 
-        # 动图属于视频类型
-        if self.tweet_media_type in ["video", "animated_gif"]:
+        # 判断是否有视频: 优先检查 tweet_video_url，fallback 检查 media_type
+        has_video = bool(self.tweet_video_url)
+        if not has_video:
+            media_type = self.tweet_media_type
+            if isinstance(media_type, str):
+                has_video = media_type in ("video", "animated_gif")
+            elif isinstance(media_type, list):
+                has_video = any(t in ("video", "animated_gif") for t in media_type)
+
+        if has_video:
             await self.download_video()
-        elif self.tweet_media_type and "photo" in self.tweet_media_type:
-            await self.download_images()
+
+        if self.tweet_media_type and "photo" in str(self.tweet_media_type):
+            # 如果有视频，跳过第一个 media（视频封面），其余为真实图片
+            await self.download_images(skip_first=has_video)
 
         await self.download_desc()
 
@@ -147,7 +157,7 @@ class TwitterDownloader(BaseDownloader):
             _("视频"), self.tweet_video_url, self.base_path, video_name, ".mp4"
         )
 
-    async def download_images(self):
+    async def download_images(self, skip_first=False):
         if not self.tweet_media_url:
             logger.warning(
                 _("{0} : {1} 该推文没有图片链接").format(
@@ -163,6 +173,8 @@ class TwitterDownloader(BaseDownloader):
         )
 
         for i, image_url in enumerate(tweet_media_urls):
+            if skip_first and i == 0:
+                continue  # 跳过视频封面
             if not image_url:
                 continue
 
