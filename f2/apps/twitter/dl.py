@@ -115,13 +115,14 @@ class TwitterDownloader(BaseDownloader):
         self.tweet_media_type = tweet_data_dict.get("tweet_media_type")
         self.tweet_media_url = tweet_data_dict.get("tweet_media_url")
         self.tweet_video_url = tweet_data_dict.get("tweet_video_url")
+        self.tweet_video_urls = tweet_data_dict.get("tweet_video_urls")
 
         # logger.info(f"========{tweet_id}========")
         # logger.info(tweet_data_dict)
         # logger.info("===================================")
 
-        # 判断是否有视频: 优先检查 tweet_video_url，fallback 检查 media_type
-        has_video = bool(self.tweet_video_url)
+        # 判断是否有视频: 优先检查 tweet_video_urls，fallback 检查 media_type
+        has_video = bool(self.tweet_video_urls)
         if not has_video:
             media_type = self.tweet_media_type
             if isinstance(media_type, str):
@@ -130,15 +131,36 @@ class TwitterDownloader(BaseDownloader):
                 has_video = any(t in ("video", "animated_gif") for t in media_type)
 
         if has_video:
-            await self.download_video()
+            await self.download_videos()
 
         if self.tweet_media_type and "photo" in str(self.tweet_media_type):
-            # 如果有视频，跳过第一个 media（视频封面），其余为真实图片
-            await self.download_images(skip_first=has_video)
+            # 如果有视频，跳过视频封面对应的 media，其余为真实图片
+            # 视频封面数 = 视频数，只跳过前 N 个（N = 视频数）
+            skip_count = len(self.tweet_video_urls) if self.tweet_video_urls else 0
+            await self.download_images(skip_first=skip_count)
 
         await self.download_desc()
 
+    async def download_videos(self):
+        """下载多个视频"""
+        if not self.tweet_video_urls:
+            logger.warning(_("{0} : 视频链接为空").format(self.tweet_id))
+            return
+
+        base_name = format_file_name(
+            self.kwargs.get("naming", "{create}_{desc}"), self.tweet_data_dict
+        )
+
+        for i, video_url in enumerate(self.tweet_video_urls):
+            if not video_url:
+                continue
+            video_name = base_name + f"_video_{i + 1}"
+            await self.initiate_download(
+                _("视频"), video_url, self.base_path, video_name, ".mp4"
+            )
+
     async def download_video(self):
+        """兼容旧版，单个视频下载"""
         if not self.tweet_video_url:
             logger.warning(_("{0} : 视频链接为空").format(self.tweet_id))
             return
@@ -173,8 +195,8 @@ class TwitterDownloader(BaseDownloader):
         )
 
         for i, image_url in enumerate(tweet_media_urls):
-            if skip_first and i == 0:
-                continue  # 跳过视频封面
+            if i < skip_first:
+                continue  # 跳过前 N 个（视频封面）
             if not image_url:
                 continue
 
