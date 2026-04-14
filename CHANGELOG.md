@@ -11,6 +11,12 @@
 - 添加 `Socket` 代理支持。
 - 添加 `Cookie` 池，`Proxy` 池，`User-Agent` 池等支持。
 
+### Fixed
+
+- 修复 Twitter 混合媒体（视频+图片）推文中视频被忽略的问题，统一使用 `extended_entities.media` 作为媒体数据源。
+- 支持 Twitter 多视频推文下载，每个视频单独命名。
+- 移除 DEBUG 模式下 Twitter API 响应日志的字符截断限制，完整打印 JSON 响应。
+
 ## [0.0.1.7] - 2024-12-31
 
 ### Added
